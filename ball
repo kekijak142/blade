@@ -1,10 +1,10 @@
 --[[
-    KIMI // BLADE BALL - ASCEND UI INTEGRATION
+    KIMI // BLADE BALL - FULL AUTO PARRY
     Made by Kimi
-    Full Auto Parry + Ascend UI Framework
+    Auto Parry + Auto Redirect + Ascend UI
 ]]
 
-print("[KIMI] Loading Ascend UI + Blade Ball...")
+print("[KIMI] Loading Blade Ball Auto Parry...")
 
 -- =============================================
 -- PHASE 1: ANTI-CHEAT BYPASS
@@ -61,7 +61,6 @@ local AscendUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/keki
 
 if not AscendUI then
     print("[KIMI] Failed to load AscendUI!")
-    -- Fallback notifikacija
     game:GetService("StarterGui"):SetCore("SendNotification", {
         Title = "KIMI ERROR",
         Text = "Failed to load AscendUI",
@@ -73,18 +72,72 @@ end
 print("[KIMI] AscendUI loaded!")
 
 -- =============================================
--- PHASE 3: CREATE UI WINDOW
+-- PHASE 3: FIND PARRY REMOTE
+-- =============================================
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local parryRemote = nil
+
+-- Pronadji parry remote (koristi istu logiku kao test skripta)
+for _, remote in ipairs(ReplicatedStorage:GetDescendants()) do
+    if remote:IsA("RemoteEvent") then
+        local name = string.lower(remote.Name)
+        if string.find(name, "parry") or string.find(name, "block") or string.find(name, "deflect") or string.find(name, "sword") then
+            parryRemote = remote
+            print("[KIMI] Parry remote found: " .. remote:GetFullName())
+            break
+        end
+    end
+end
+
+-- Ako nije nadjen, probaj alternativne lokacije
+if not parryRemote then
+    print("[KIMI] Parry remote not found in ReplicatedStorage, trying other locations...")
+    local locations = {
+        game:GetService("ReplicatedFirst"),
+        game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui"),
+        workspace
+    }
+    
+    for _, location in ipairs(locations) do
+        for _, remote in ipairs(location:GetDescendants()) do
+            if remote:IsA("RemoteEvent") then
+                local name = string.lower(remote.Name)
+                if string.find(name, "parry") or string.find(name, "block") or string.find(name, "deflect") or string.find(name, "sword") then
+                    parryRemote = remote
+                    print("[KIMI] Parry remote found in " .. location.Name .. ": " .. remote:GetFullName())
+                    break
+                end
+            end
+        end
+        if parryRemote then break end
+    end
+end
+
+if not parryRemote then
+    print("[KIMI] CRITICAL: Parry remote not found!")
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "KIMI ERROR",
+        Text = "Parry remote not found!",
+        Duration = 3
+    })
+    return
+end
+
+print("[KIMI] Using parry remote: " .. parryRemote:GetFullName())
+
+-- =============================================
+-- PHASE 4: CREATE UI WINDOW
 -- =============================================
 
 local MainWindow = AscendUI:CreateWindow("KIMI // BLADE BALL")
 
 -- =============================================
--- PHASE 4: BLADE BALL ENGINE (PRE TABOVA)
+-- PHASE 5: BLADE BALL ENGINE
 -- =============================================
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Player = Players.LocalPlayer
 local Balls = workspace:FindFirstChild("Balls")
 local Remotes = ReplicatedStorage:FindFirstChild("Remotes") or ReplicatedStorage
@@ -107,6 +160,19 @@ local autoParryEnabled = false
 local autoRedirectEnabled = false
 local parryCooldown = false
 local parryConnection = nil
+local aimRemote = nil
+
+-- Find aim remote for redirect
+for _, remote in ipairs(ReplicatedStorage:GetDescendants()) do
+    if remote:IsA("RemoteEvent") then
+        local name = string.lower(remote.Name)
+        if string.find(name, "aim") or string.find(name, "redirect") or string.find(name, "target") then
+            aimRemote = remote
+            print("[KIMI] Aim remote found: " .. remote:GetFullName())
+            break
+        end
+    end
+end
 
 -- Verify ball
 local function VerifyBall(Ball)
@@ -155,23 +221,16 @@ local function GetNearestEnemy()
     return nearest
 end
 
--- Perform parry
+-- Perform parry (koristi pronadjeni remote)
 local function Parry()
     if parryCooldown then return end
     parryCooldown = true
     
-    local parryRemote = Remotes:FindFirstChild("ParryButtonPress") or 
-                         Remotes:FindFirstChild("Parry") or 
-                         ReplicatedStorage:FindFirstChild("Parry")
     if parryRemote then
-        parryRemote:FireServer()
-    else
-        for _, remote in ipairs(ReplicatedStorage:GetChildren()) do
-            if remote:IsA("RemoteEvent") and string.find(string.lower(remote.Name), "parry") then
-                remote:FireServer()
-                break
-            end
-        end
+        pcall(function()
+            parryRemote:FireServer()
+            print("[KIMI] Parry fired!")
+        end)
     end
     
     task.wait(CONFIG.PARRY_COOLDOWN)
@@ -224,14 +283,13 @@ function startParryLoop()
                 if timeToImpact <= CONFIG.REACTION_TIME + 0.2 and timeToImpact > 0.02 then
                     Parry()
                     
-                    if autoRedirectEnabled then
+                    if autoRedirectEnabled and aimRemote then
                         local enemy = GetNearestEnemy()
                         if enemy then
-                            local aimRemote = Remotes:FindFirstChild("AimAssist") or 
-                                              ReplicatedStorage:FindFirstChild("AimAssist")
-                            if aimRemote then
+                            pcall(function()
                                 aimRemote:FireServer(enemy)
-                            end
+                                print("[KIMI] Redirect fired to: " .. enemy.Name)
+                            end)
                         end
                     end
                     
@@ -263,7 +321,7 @@ function stopParryLoop()
 end
 
 -- =============================================
--- PHASE 5: CREATE TABS
+-- PHASE 6: CREATE TABS
 -- =============================================
 
 -- COMBAT TAB
@@ -458,7 +516,7 @@ StatusTab:CreateSection("System Status")
 StatusTab:CreateButton("Check Status", function()
     game:GetService("StarterGui"):SetCore("SendNotification", {
         Title = "KIMI",
-        Text = "Bypass: ACTIVE\nUI: LOADED\nEngine: READY\nAuto Parry: " .. (autoParryEnabled and "ON" or "OFF"),
+        Text = "Bypass: ACTIVE\nUI: LOADED\nEngine: READY\nParry Remote: " .. (parryRemote and "FOUND" or "MISSING"),
         Duration = 4
     })
 end)
@@ -497,22 +555,23 @@ CreditsTab:CreateButton("Discord: @kimi", function()
 end)
 
 -- =============================================
--- PHASE 6: INIT
+-- PHASE 7: INIT
 -- =============================================
 
 task.wait(1)
 
 game:GetService("StarterGui"):SetCore("SendNotification", {
     Title = "KIMI // BLADE BALL",
-    Text = "Ascend UI + Auto Parry Loaded!",
+    Text = "Auto Parry Ready!",
     Duration = 3
 })
 
 print("===========================================")
-print("  KIMI BLADE BALL - ASCEND UI")
+print("  KIMI BLADE BALL - AUTO PARRY")
 print("  ---------------------------------")
 print("  Bypass: LOADED")
 print("  UI: LOADED")
+print("  Parry Remote: " .. (parryRemote and parryRemote:GetFullName() or "NOT FOUND"))
 print("  Engine: READY")
 print("  Made by: Kimi")
 print("===========================================")
