@@ -1,0 +1,520 @@
+--[[
+    KIMI // BLADE BALL - ASCEND UI INTEGRATION
+    Made by Kimi
+    Full Auto Parry + Ascend UI Framework
+]]
+
+print("[KIMI] Loading Ascend UI + Blade Ball...")
+
+-- =============================================
+-- PHASE 1: ANTI-CHEAT BYPASS
+-- =============================================
+
+local success, err = pcall(function()
+    print("[KIMI] Loading bypass...")
+    
+    local original_debug_info = debug.info
+    local original_getfenv = getfenv
+    
+    local function bypass_debug_info()
+        local old = original_debug_info
+        getrenv().debug.info = function(f, t)
+            if type(f) == "function" then
+                return "[C]"
+            end
+            if f == 4 and t == "s" then
+                return "ReplicatedStorage.Controllers.SwordsController"
+            end
+            return old(f, t)
+        end
+        debug.info = getrenv().debug.info
+    end
+    
+    local function bypass_getfenv()
+        local old2 = original_getfenv
+        getrenv().getfenv = function(l)
+            if l ~= nil and type(l) == "number" then
+                if l >= 1 and l <= 10 then
+                    return old2(10)
+                end
+            end
+            return old2(l)
+        end
+        getfenv = getrenv().getfenv
+    end
+    
+    bypass_debug_info()
+    bypass_getfenv()
+    
+    print("[KIMI] Bypass loaded!")
+end)
+
+if not success then
+    print("[KIMI] Bypass error: " .. tostring(err))
+end
+
+-- =============================================
+-- PHASE 2: LOAD ASCEND UI
+-- =============================================
+
+local AscendUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/kekijak142/fg/refs/heads/main/gfh"))()
+
+if not AscendUI then
+    print("[KIMI] Failed to load AscendUI!")
+    -- Fallback notifikacija
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "KIMI ERROR",
+        Text = "Failed to load AscendUI",
+        Duration = 3
+    })
+    return
+end
+
+print("[KIMI] AscendUI loaded!")
+
+-- =============================================
+-- PHASE 3: CREATE UI WINDOW
+-- =============================================
+
+local MainWindow = AscendUI:CreateWindow("KIMI // BLADE BALL")
+
+-- =============================================
+-- PHASE 4: BLADE BALL ENGINE (PRE TABOVA)
+-- =============================================
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Player = Players.LocalPlayer
+local Balls = workspace:FindFirstChild("Balls")
+local Remotes = ReplicatedStorage:FindFirstChild("Remotes") or ReplicatedStorage
+
+if not Balls then
+    Balls = workspace:WaitForChild("Balls", 5)
+    if not Balls then
+        Balls = workspace
+    end
+end
+
+-- Config
+local CONFIG = {
+    PARRY_COOLDOWN = 0.15,
+    REACTION_TIME = 0.1,
+}
+
+-- State
+local autoParryEnabled = false
+local autoRedirectEnabled = false
+local parryCooldown = false
+local parryConnection = nil
+
+-- Verify ball
+local function VerifyBall(Ball)
+    if typeof(Ball) == "Instance" and Ball:IsA("BasePart") then
+        if Balls and Ball:IsDescendantOf(Balls) then
+            return true
+        end
+        if Ball.Size.X > 2 and Ball.Size.Y > 2 and Ball.Size.Z > 2 then
+            return true
+        end
+    end
+    return false
+end
+
+-- Check if targeted
+local function IsTargeted()
+    return Player.Character and Player.Character:FindFirstChild("Highlight")
+end
+
+-- Get nearest enemy
+local function GetNearestEnemy()
+    local character = Player.Character
+    if not character then return nil end
+    
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not root then return nil end
+    
+    local nearest = nil
+    local nearestDist = math.huge
+    
+    for _, otherPlayer in ipairs(Players:GetPlayers()) do
+        if otherPlayer ~= Player then
+            local otherChar = otherPlayer.Character
+            if otherChar then
+                local otherRoot = otherChar:FindFirstChild("HumanoidRootPart")
+                if otherRoot then
+                    local dist = (root.Position - otherRoot.Position).Magnitude
+                    if dist < nearestDist then
+                        nearestDist = dist
+                        nearest = otherPlayer
+                    end
+                end
+            end
+        end
+    end
+    return nearest
+end
+
+-- Perform parry
+local function Parry()
+    if parryCooldown then return end
+    parryCooldown = true
+    
+    local parryRemote = Remotes:FindFirstChild("ParryButtonPress") or 
+                         Remotes:FindFirstChild("Parry") or 
+                         ReplicatedStorage:FindFirstChild("Parry")
+    if parryRemote then
+        parryRemote:FireServer()
+    else
+        for _, remote in ipairs(ReplicatedStorage:GetChildren()) do
+            if remote:IsA("RemoteEvent") and string.find(string.lower(remote.Name), "parry") then
+                remote:FireServer()
+                break
+            end
+        end
+    end
+    
+    task.wait(CONFIG.PARRY_COOLDOWN)
+    parryCooldown = false
+end
+
+-- Start parry loop
+function startParryLoop()
+    if parryConnection then
+        parryConnection:Disconnect()
+        parryConnection = nil
+    end
+    
+    if not Balls then return end
+    
+    parryConnection = Balls.ChildAdded:Connect(function(Ball)
+        if not VerifyBall(Ball) then return end
+        if not autoParryEnabled then return end
+        
+        local OldPosition = Ball.Position
+        local OldTick = tick()
+        local ballVelocity = nil
+        
+        local positionConnection
+        positionConnection = Ball:GetPropertyChangedSignal("Position"):Connect(function()
+            if not autoParryEnabled then
+                positionConnection:Disconnect()
+                return
+            end
+            
+            if not IsTargeted() then
+                positionConnection:Disconnect()
+                return
+            end
+            
+            local newPos = Ball.Position
+            local deltaTime = tick() - OldTick
+            if deltaTime > 0 then
+                ballVelocity = (OldPosition - newPos).Magnitude / deltaTime
+            end
+            
+            OldPosition = newPos
+            OldTick = tick()
+            
+            local distance = (Ball.Position - workspace.CurrentCamera.Focus.Position).Magnitude
+            
+            if ballVelocity and distance < 30 and distance > 2 then
+                local timeToImpact = distance / ballVelocity
+                
+                if timeToImpact <= CONFIG.REACTION_TIME + 0.2 and timeToImpact > 0.02 then
+                    Parry()
+                    
+                    if autoRedirectEnabled then
+                        local enemy = GetNearestEnemy()
+                        if enemy then
+                            local aimRemote = Remotes:FindFirstChild("AimAssist") or 
+                                              ReplicatedStorage:FindFirstChild("AimAssist")
+                            if aimRemote then
+                                aimRemote:FireServer(enemy)
+                            end
+                        end
+                    end
+                    
+                    positionConnection:Disconnect()
+                end
+            end
+            
+            if distance < 8 and IsTargeted() then
+                Parry()
+                positionConnection:Disconnect()
+            end
+        end)
+        
+        Ball.AncestryChanged:Connect(function()
+            if not Ball.Parent then
+                if positionConnection then
+                    positionConnection:Disconnect()
+                end
+            end
+        end)
+    end)
+end
+
+function stopParryLoop()
+    if parryConnection then
+        parryConnection:Disconnect()
+        parryConnection = nil
+    end
+end
+
+-- =============================================
+-- PHASE 5: CREATE TABS
+-- =============================================
+
+-- COMBAT TAB
+local CombatTab = MainWindow:CreateTab("Combat")
+
+CombatTab:CreateSection("Parry Settings")
+
+CombatTab:CreateToggle("Auto Parry", false, function(state)
+    autoParryEnabled = state
+    if state then
+        startParryLoop()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "KIMI",
+            Text = "Auto Parry: ON",
+            Duration = 1.5
+        })
+    else
+        stopParryLoop()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "KIMI",
+            Text = "Auto Parry: OFF",
+            Duration = 1.5
+        })
+    end
+end)
+
+CombatTab:CreateToggle("Auto Redirect", false, function(state)
+    autoRedirectEnabled = state
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "KIMI",
+        Text = "Auto Redirect: " .. (state and "ON" or "OFF"),
+        Duration = 1.5
+    })
+end)
+
+CombatTab:CreateButton("Force Parry", function()
+    Parry()
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "KIMI",
+        Text = "Parry Fired",
+        Duration = 1
+    })
+end)
+
+CombatTab:CreateSlider("Parry Cooldown", 50, 300, 150, function(value)
+    CONFIG.PARRY_COOLDOWN = value / 1000
+end)
+
+CombatTab:CreateSlider("Reaction Time", 50, 250, 100, function(value)
+    CONFIG.REACTION_TIME = value / 1000
+end)
+
+-- MOVEMENT TAB
+local MovementTab = MainWindow:CreateTab("Movement")
+
+MovementTab:CreateSection("Player Movement")
+
+local walkSpeedVal = 16
+MovementTab:CreateButton("Walkspeed: 16", function()
+    local char = Player.Character
+    if char then
+        local humanoid = char:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            walkSpeedVal = walkSpeedVal == 16 and 50 or 16
+            humanoid.WalkSpeed = walkSpeedVal
+            game:GetService("StarterGui"):SetCore("SendNotification", {
+                Title = "KIMI",
+                Text = "Walkspeed: " .. walkSpeedVal,
+                Duration = 1
+            })
+        end
+    end
+end)
+
+local jumpVal = 50
+MovementTab:CreateButton("Jumppower: 50", function()
+    local char = Player.Character
+    if char then
+        local humanoid = char:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            jumpVal = jumpVal == 50 and 100 or 50
+            humanoid.JumpPower = jumpVal
+            game:GetService("StarterGui"):SetCore("SendNotification", {
+                Title = "KIMI",
+                Text = "Jumppower: " .. jumpVal,
+                Duration = 1
+            })
+        end
+    end
+end)
+
+local infiniteJump = false
+MovementTab:CreateToggle("Infinite Jump", false, function(state)
+    infiniteJump = state
+    if state then
+        game:GetService("UserInputService").JumpRequest:Connect(function()
+            if infiniteJump then
+                local char = Player.Character
+                if char then
+                    local humanoid = char:FindFirstChildOfClass("Humanoid")
+                    if humanoid and humanoid.Health > 0 then
+                        humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+                    end
+                end
+            end
+        end)
+    end
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "KIMI",
+        Text = "Infinite Jump: " .. (state and "ON" or "OFF"),
+        Duration = 1.5
+    })
+end)
+
+-- UTILITY TAB
+local UtilityTab = MainWindow:CreateTab("Utility")
+
+UtilityTab:CreateSection("Server Options")
+
+UtilityTab:CreateButton("Rejoin Server", function()
+    game:GetService("TeleportService"):Teleport(game.PlaceId, Player)
+end)
+
+local antiAFK = false
+UtilityTab:CreateToggle("Anti-AFK", false, function(state)
+    antiAFK = state
+    if state then
+        game:GetService("RunService").Heartbeat:Connect(function()
+            if antiAFK then
+                pcall(function()
+                    local vu = game:GetService("VirtualUser")
+                    vu:CaptureController()
+                    vu:ClickButton2(Vector2.new())
+                end)
+            end
+        end)
+    end
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "KIMI",
+        Text = "Anti-AFK: " .. (state and "ON" or "OFF"),
+        Duration = 1.5
+    })
+end)
+
+UtilityTab:CreateButton("Refresh Bypass", function()
+    pcall(function()
+        local original_debug_info = debug.info
+        local original_getfenv = getfenv
+        
+        local function bypass_debug_info()
+            local old = original_debug_info
+            getrenv().debug.info = function(f, t)
+                if type(f) == "function" then
+                    return "[C]"
+                end
+                if f == 4 and t == "s" then
+                    return "ReplicatedStorage.Controllers.SwordsController"
+                end
+                return old(f, t)
+            end
+            debug.info = getrenv().debug.info
+        end
+        
+        local function bypass_getfenv()
+            local old2 = original_getfenv
+            getrenv().getfenv = function(l)
+                if l ~= nil and type(l) == "number" then
+                    if l >= 1 and l <= 10 then
+                        return old2(10)
+                    end
+                end
+                return old2(l)
+            end
+            getfenv = getrenv().getfenv
+        end
+        
+        bypass_debug_info()
+        bypass_getfenv()
+    end)
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "KIMI",
+        Text = "Bypass Refreshed",
+        Duration = 1.5
+    })
+end)
+
+-- STATUS TAB
+local StatusTab = MainWindow:CreateTab("Status")
+
+StatusTab:CreateSection("System Status")
+
+StatusTab:CreateButton("Check Status", function()
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "KIMI",
+        Text = "Bypass: ACTIVE\nUI: LOADED\nEngine: READY\nAuto Parry: " .. (autoParryEnabled and "ON" or "OFF"),
+        Duration = 4
+    })
+end)
+
+StatusTab:CreateButton("Reload UI", function()
+    local sg = game:GetService("CoreGui"):FindFirstChild("AscendPremiumGUI")
+    if sg then sg:Destroy() end
+    task.wait(0.3)
+    loadstring(game:HttpGet("https://raw.githubusercontent.com/kekijak142/fg/refs/heads/main/gfh"))()
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "KIMI",
+        Text = "UI Reloaded",
+        Duration = 2
+    })
+end)
+
+-- CREDITS TAB
+local CreditsTab = MainWindow:CreateTab("Credits")
+
+CreditsTab:CreateSection("Developer")
+
+CreditsTab:CreateButton("Made by Kimi", function()
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "KIMI",
+        Text = "All credits to Kimi",
+        Duration = 3
+    })
+end)
+
+CreditsTab:CreateButton("Discord: @kimi", function()
+    game:GetService("StarterGui"):SetCore("SendNotification", {
+        Title = "KIMI",
+        Text = "Contact: @kimi on Discord",
+        Duration = 3
+    })
+end)
+
+-- =============================================
+-- PHASE 6: INIT
+-- =============================================
+
+task.wait(1)
+
+game:GetService("StarterGui"):SetCore("SendNotification", {
+    Title = "KIMI // BLADE BALL",
+    Text = "Ascend UI + Auto Parry Loaded!",
+    Duration = 3
+})
+
+print("===========================================")
+print("  KIMI BLADE BALL - ASCEND UI")
+print("  ---------------------------------")
+print("  Bypass: LOADED")
+print("  UI: LOADED")
+print("  Engine: READY")
+print("  Made by: Kimi")
+print("===========================================")
+
+print("[KIMI] Script loaded successfully!")
